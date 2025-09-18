@@ -1,0 +1,212 @@
+---
+# ClusterIssuer per Let's Encrypt Production
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-prod
+  namespace: cert-manager
+spec:
+  acme:
+    # URL del server ACME di Let's Encrypt Production
+    server: https://acme-v02.api.letsencrypt.org/directory
+    # Email per notifiche importanti sul certificato
+    email: admin@yourdomain.com
+    # Nome del secret per memorizzare la chiave privata dell'account ACME
+    privateKeySecretRef:
+      name: letsencrypt-prod-account-key
+    solvers:
+    # Configurazione della sfida HTTP01
+    - http01:
+        ingress:
+          class: nginx
+---
+# ClusterIssuer per Let's Encrypt Staging (test)
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-staging
+  namespace: cert-manager
+spec:
+  acme:
+    # URL del server ACME di Let's Encrypt Staging
+    server: https://acme-staging-v02.api.letsencrypt.org/directory
+    email: admin@yourdomain.com
+    privateKeySecretRef:
+      name: letsencrypt-staging-account-key
+    solvers:
+    - http01:
+        ingress:
+          class: nginx
+---
+# Certificate resource per il dominio principale
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: main-tls-cert
+  namespace: default
+spec:
+  # Nome del secret dove verrà memorizzato il certificato
+  secretName: main-tls-secret
+  # Durata del certificato (90 giorni)
+  duration: 2160h
+  # Rinnova quando mancano 30 giorni alla scadenza
+  renewBefore: 720h
+  # Domini per cui il certificato è valido
+  dnsNames:
+  - yourdomain.com
+  - www.yourdomain.com
+  # Riferimento all'issuer da utilizzare
+  issuerRef:
+    name: letsencrypt-prod
+    kind: ClusterIssuer
+---
+# Certificate resource per i sottodomini
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: wildcard-tls-cert
+  namespace: default
+spec:
+  secretName: wildcard-tls-secret
+  duration: 2160h
+  renewBefore: 720h
+  dnsNames:
+  - "*.yourdomain.com"
+  issuerRef:
+    name: letsencrypt-prod
+    kind: ClusterIssuer
+---
+# Ingress resource che utilizza il certificato
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: main-ingress
+  annotations:
+    # Abilita cert-manager
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    # Forza HTTPS
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    # HSTS con preload
+    nginx.ingress.kubernetes.io/hsts: "true"
+    nginx.ingress.kubernetes.io/hsts-include-subdomains: "true"
+    nginx.ingress.kubernetes.io/hsts-max-age: "31536000"
+    nginx.ingress.kubernetes.io/hsts-preload: "true"
+spec:
+  tls:
+  - hosts:
+    - yourdomain.com
+    - www.yourdomain.com
+    secretName: main-tls-secret
+  rules:
+  - host: yourdomain.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: main-service
+            port:
+              number: 80
+---
+# ConfigMap per la configurazione di cert-manager
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cert-manager-config
+  namespace: cert-manager
+data:
+  # Configurazione per rate limiting delle richieste a Let's Encrypt
+  acme-http01-solver-resource-limits: |
+    requests:
+      cpu: 100m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+  
+  # Configurazione per il monitoraggio dei certificati
+  certificate-monitoring: |
+    enabled: true
+    alerting:
+      expiry-threshold: 720h  # Avvisa 30 giorni prima della scadenza
+      email-alerts: true
+      slack-alerts: true
+      
+  # Configurazione per il backup automatico dei certificati
+  certificate-backup: |
+    enabled: true
+    schedule: "0 0 * * *"  # Backup giornaliero
+    retention: 30  # Mantieni i backup per 30 giorni
+    storage:
+      type: s3
+      bucket: cert-backups
+---
+# Service per esporre le metriche di cert-manager
+apiVersion: v1
+kind: Service
+metadata:
+  name: cert-manager-metrics
+  namespace: cert-manager
+  labels:
+    app: cert-manager
+spec:
+  type: ClusterIP
+  ports:
+  - name: metrics
+    port: 9402
+    targetPort: 9402
+    protocol: TCP
+  selector:
+    app: cert-manager
+---
+# ServiceMonitor per Prometheus (se utilizzato)
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: cert-manager
+  namespace: cert-manager
+  labels:
+    release: prometheus
+spec:
+  selector:
+    matchLabels:
+      app: cert-manager
+  endpoints:
+  - port: metrics
+    interval: 30s
+---
+# NetworkPolicy per limitare l'accesso a cert-manager
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: cert-manager-network-policy
+  namespace: cert-manager
+spec:
+  podSelector:
+    matchLabels:
+      app: cert-manager
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: ingress-nginx
+    ports:
+    - protocol: TCP
+      port: 9402
+  egress:
+  - to:
+    - ipBlock:
+        cidr: 0.0.0.0/0
+        except:
+        - 10.0.0.0/8
+        - 172.16.0.0/12
+        - 192.168.0.0/16
+    ports:
+    - protocol: TCP
+      port: 80
+    - protocol: TCP
+      port: 443
