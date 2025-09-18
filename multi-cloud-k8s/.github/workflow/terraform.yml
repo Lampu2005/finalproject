@@ -1,0 +1,54 @@
+name: Terraform Multi-Cloud
+
+on:
+  workflow_dispatch:
+    inputs:
+      cloud:
+        description: "Cloud provider (aks | eks | gke)"
+        required: true
+        default: "aks"
+  push:
+    branches: [ main ]
+
+jobs:
+  terraform:
+    runs-on: ubuntu-latest
+    env:
+      TF_IN_AUTOMATION: true
+
+    steps:
+    - uses: actions/checkout@v4
+    - uses: hashicorp/setup-terraform@v3
+
+    - name: Azure Login
+      if: ${{ github.event.inputs.cloud == 'aks' }}
+      uses: azure/login@v1
+      with:
+        creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+    - name: AWS Credentials
+      if: ${{ github.event.inputs.cloud == 'eks' }}
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: eu-west-1
+
+    - name: GCP Login
+      if: ${{ github.event.inputs.cloud == 'gke' }}
+      uses: google-github-actions/auth@v1
+      with:
+        credentials_json: ${{ secrets.GCP_CREDENTIALS }}
+
+    - name: Terraform Init
+      working-directory: infra
+      run: terraform init
+
+    - name: Terraform Plan
+      working-directory: infra
+      run: terraform plan -var="cloud=${{ github.event.inputs.cloud }}"
+
+    - name: Terraform Apply
+      if: github.ref == 'refs/heads/main'
+      working-directory: infra
+      run: terraform apply -auto-approve -var="cloud=${{ github.event.inputs.cloud }}"

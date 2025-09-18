@@ -1,0 +1,50 @@
+name: Deploy K8s Multi-Cloud
+
+on:
+  workflow_dispatch:
+    inputs:
+      cloud:
+        description: "Cloud provider (aks | eks | gke)"
+        required: true
+        default: "aks"
+  push:
+    branches: [ main ]
+    paths:
+      - 'k8s/**'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Azure Login
+      if: ${{ github.event.inputs.cloud == 'aks' }}
+      uses: azure/login@v1
+      with:
+        creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+    - name: AWS Credentials
+      if: ${{ github.event.inputs.cloud == 'eks' }}
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: eu-west-1
+
+    - name: GCP Login
+      if: ${{ github.event.inputs.cloud == 'gke' }}
+      uses: google-github-actions/auth@v1
+      with:
+        credentials_json: ${{ secrets.GCP_CREDENTIALS }}
+
+    - name: Get kubeconfig and apply
+      run: |
+        if [ "${{ github.event.inputs.cloud }}" == "aks" ]; then
+          az aks get-credentials --resource-group rg-aks-demo --name aks-demo
+        elif [ "${{ github.event.inputs.cloud }}" == "eks" ]; then
+          aws eks update-kubeconfig --region eu-west-1 --name eks-demo
+        elif [ "${{ github.event.inputs.cloud }}" == "gke" ]; then
+          gcloud container clusters get-credentials gke-demo --region europe-west1 --project ${{ secrets.GCP_PROJECT }}
+        fi
+        kubectl apply -f k8s/
